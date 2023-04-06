@@ -1,0 +1,89 @@
+# The Class BootStrapIRS includes takes par swap rates and corresponding 
+# expirys, tenors and delta(one devided by payment frequency)as inputs
+# And include method that returns the instantaneous forward rates and ZCB yeilds
+
+import numpy as np
+import random as rd
+import scipy as sp
+import pandas as pd
+from scipy.stats import norm
+from scipy.optimize import basinhopping
+import warnings
+warnings.filterwarnings("ignore")
+from scipy.stats import norm
+
+class BootStrapIRS:
+
+  def __init__(self, expirys, tenors, F0, delta):
+    self.t_alphas = np.array(expirys)
+    self.tenors = np.array(tenors)
+    self.t_betas = np.add(self.t_alphas, self.tenors)
+    self.F0 = np.array(F0)
+    self.d = delta 
+
+    maxF0, minF0 = max(set(self.F0)), min(set(self.F0))
+    fwrs = [] # the instantaneous forward rates that as final results of bootstrapping
+    self.uno_itvs = [self.t_alphas[0]] + [self.d] * int((self.t_betas[-1] - self.t_alphas[0])/self.d)
+    
+    self.sample_fwrs = []
+    for i in range(len(self.F0)):
+      self.sample_fwrs.append(rd.uniform(maxF0, minF0)) # F0 is in the unit of 1 intead of bps
+
+    self.nbetas = [int((self.t_betas[i] - self.t_alphas[0]) / self.d + 1) for i in range(len(self.t_betas))]
+
+    self.allo_lst = []
+    for i in range(len(self.F0)):
+      if i == 0:
+        self.allo_lst += [self.sample_fwrs[i]] * (1 + int((self.t_betas[i] - self.t_alphas[i]) / self.d))
+      else:
+        self.allo_lst += [self.sample_fwrs[i]] * int((self.t_betas[i] - self.t_betas[i - 1]) / self.d)
+
+    self.dfactors = [np.exp(-1 *sum(np.multiply(self.allo_lst[0:i+2], self.uno_itvs[0:i+2]))) for i in range(len(self.uno_itvs) - 1)]
+
+  def f(self, x, rd, tuple0):
+    fwrslist = list(tuple0)
+    fwrslist[rd] = x
+
+    alst = []
+    for i in range(len(self.F0)):
+      if i == 0:
+        alst += [fwrslist[i]] * (1 + int((self.t_betas[i] - self.t_alphas[i]) / self.d))
+      else:
+        alst += [fwrslist[i]] * int((self.t_betas[i] - self.t_betas[i - 1]) / self.d)
+
+    dfts = [np.exp(-1 * sum(np.multiply(alst[0:i+2], self.uno_itvs[0:i+2]))) for i in range(len(self.uno_itvs) - 1)]
+
+    discre = [(np.exp(self.d * alst[i + 1]) - 1) / self.d - self.F0[rd] for i in range(self.nbetas[rd] - 1)]
+    pf = sum(np.multiply(np.array(discre, dtype='float'), dfts[0:self.nbetas[rd] - 1]))
+
+    return pf
+
+  def bootstrap(self):
+    li = self.sample_fwrs
+    li[0] = np.log(self.F0[0] * self.d + 1) / self.d
+
+    for i in range(len(self.F0) - 1):
+      tp = tuple(li)
+      sol = sp.optimize.root(self.f, 0.013, args=(i + 1, tp))
+      li[i + 1] = float(sol.x)
+
+    return li
+
+  def annuity_fuc(self):
+    
+    fwrslist = self.bootstrap()
+    alst = []
+    for i in range(len(self.F0)):
+      if i == 0:
+        alst += [fwrslist[i]] * (1 + int((self.t_betas[i] - self.t_alphas[i]) / self.d))
+      else:
+        alst += [fwrslist[i]] * int((self.t_betas[i] - self.t_betas[i - 1]) / self.d)
+
+    dfts = [np.exp(-1 *sum(np.multiply(alst[0:i+2], self.uno_itvs[0:i+2]))) for i in range(len(self.uno_itvs) - 1)]
+
+    wl = []
+    for round in range(len(self.F0)):
+      pf = sum(np.multiply(np.array([self.d] * (self.nbetas[round] - 1)), dfts[0:self.nbetas[round] - 1]))
+      wl.append(pf)
+    
+    return wl
